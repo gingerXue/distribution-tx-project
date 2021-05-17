@@ -1,4 +1,4 @@
-package cn.itcast.dtx.tccdemo.bank1.service;
+package cn.itcast.dtx.tccdemo.bank2.service;
 
 /**
  * describe

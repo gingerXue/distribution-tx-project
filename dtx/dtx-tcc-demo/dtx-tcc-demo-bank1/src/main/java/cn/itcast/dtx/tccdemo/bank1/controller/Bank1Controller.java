@@ -14,13 +14,14 @@ import org.springframework.web.bind.annotation.RestController;
  * @since :[ 1.0.0 ]
  */
 @RestController
-public class AccountInfoController {
+public class Bank1Controller {
 
     @Autowired
     AccountInfoService accountInfoService;
 
     @GetMapping("/transfer")
-    public void transfer(@RequestParam("amount") Double amount) {
-        accountInfoService.updateAccountBalance("1", amount); 
+    public String transfer(@RequestParam("amount") Double amount) {
+        accountInfoService.updateAccountBalance("1", amount);
+        return "转账成功";
     }
 }

@@ -1,5 +1,6 @@
-package cn.itcast.dtx.seatademo.bank1.spring;
+package cn.itcast.dtx.tccdemo.bank1.spring;
 
+import org.dromara.hmily.annotation.Hmily;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -11,7 +12,7 @@ import org.springframework.web.bind.annotation.RequestParam;
  * @createTime :[ 2021/5/14 16:42 ]
  * @since :[ 1.0.0 ]
  */
-@FeignClient(value = "seata-demo-bank2", fallback = Bank2ClientFallback.class)
+@FeignClient(value = "tcc-demo-bank2", fallback = Bank2ClientFallback.class)
 public interface Bank2Client {
 
     /**
@@ -20,5 +21,6 @@ public interface Bank2Client {
      * @return
      */
     @GetMapping("/bank2/transfer")
-    String transfer(@RequestParam("amount") Double amount);
+    @Hmily
+    Boolean transfer(@RequestParam("amount") Double amount);
 }

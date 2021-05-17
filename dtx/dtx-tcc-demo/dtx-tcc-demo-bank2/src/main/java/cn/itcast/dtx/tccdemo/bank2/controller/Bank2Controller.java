@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
  * @since :[ 1.0.0 ]
  */
 @RestController
-public class AccountInfoController {
+public class Bank2Controller {
 
     @Autowired
     AccountInfoService accountInfoService;
