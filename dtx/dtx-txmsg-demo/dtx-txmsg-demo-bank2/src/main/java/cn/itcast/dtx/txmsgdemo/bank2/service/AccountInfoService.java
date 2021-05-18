@@ -1,5 +1,7 @@
 package cn.itcast.dtx.txmsgdemo.bank2.service;
 
+import cn.itcast.dtx.txmsgdemo.bank2.model.AccountChangeEvent;
+
 /**
  * describe
  *
@@ -8,4 +10,10 @@ package cn.itcast.dtx.txmsgdemo.bank2.service;
  * @since :[ 1.0.0 ]
  */
 public interface AccountInfoService {
+
+    /**
+     * 给账户加钱
+     * @param accountChangeEvent
+     */
+    void addAccountInfoBalance(AccountChangeEvent accountChangeEvent);
 }

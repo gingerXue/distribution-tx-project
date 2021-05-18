@@ -1,4 +1,4 @@
-package cn.itcast.dtx.txmsgdemo.bank1.model;
+package cn.itcast.dtx.txmsgdemo.bank2.model;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
