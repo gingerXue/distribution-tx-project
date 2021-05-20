@@ -9,11 +9,11 @@ import java.util.Map;
 import java.util.concurrent.*;
 
 /**
- * 线程池工具类
+ * 任务分配工具类
  *
  * @author :[ xuejz ]
  * @createTime :[ 2021/5/19 17:38 ]
- * @since :[ 1.0.0 ]
+ * @since :[ 1.0.1 ]
  */
 @Slf4j
 public class ThreadPoolTool {
@@ -24,8 +24,8 @@ public class ThreadPoolTool {
      * @param transactionManager 事务管理器
      * @param data               需要执行的数据集合
      * @param threadCount        核心线程数
-     * @param params
-     * @param clazz
+     * @param params             备用参数
+     * @param clazz              子线程实现类
      */
     public static void executeTask(DataSourceTransactionManager transactionManager, List data, int threadCount, Map params, Class clazz) {
         if (data == null || data.size() == 0) {
@@ -65,7 +65,7 @@ public class ThreadPoolTool {
             log.info("主线程开始执行任务");
             // 根据返回结果来确定是否回滚
             for (int i = 0; i < threadCount; i++) {
-                boolean result = (boolean) results.poll();
+                boolean result = results.poll();
                 if (!result) {
                     rollback.setNeedRollBack(true); // 需要回滚
                     break;

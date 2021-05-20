@@ -27,6 +27,9 @@ public class AddAccountInfoBatch extends ThreadTask {
      */
     private List<AccountInfo> data;
 
+    /**
+     * 无法通过spring的依赖注入来注入, 需要通过params来获得
+     */
     private AccountInfoDao accountInfoDao;
 
     public AddAccountInfoBatch(CountDownLatch childMonitor,
@@ -50,7 +53,7 @@ public class AddAccountInfoBatch extends ThreadTask {
         log.info("子线程[{}]执行业务逻辑", Thread.currentThread().getName());
         try {
             if (data.get(0).getAccountBalance() == 10) {
-                throw new RuntimeException("人工制造异常");
+                throw new RuntimeException("人工制造异常 - 回滚");
             }
             int i = accountInfoDao.addAccountBatch(data);
             return i == data.size();

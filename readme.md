@@ -198,3 +198,314 @@ hmily会在程序启动时会在指定的数据库中创建两张表：
 
 场景：通过RocketMQ实现可靠消息一致性事务，模拟两个账户的转账交易过程
 
+# 案例：如何控制多线程事务？
+
+**场景**：导入大批量数据的excel文件，解析之后需要写入数据库中，想要使用多线程对这个操作进行优化。但是可以注意到Spring是不支持多线程事务控制的，因为每一个线程的ThreadLocal都维护着自己的数据库连接，所以多线程情况下，spring的事务管理是不起作用的，应该如何处理？
+
+**思路**：用两个CountDownLatch实现子线程的二段提交
+
+**步骤**：
+
+1. 主线程将要导入的大批量数据分发给指定数量（可以由自己定）的子线程，然后使用childMonitor.await()阻塞主线程，让主线程等待子线程的执行。并使用BlockingDeque来存储子线程的执行结果。
+2. 子线程执行完毕之后调用childMonitor.countDown()，子线程的业务执行完毕之后，调用mainMonitor.await()阻塞每个子线程，等待主线程的执行；
+3. 主线程被释放之后判断子线程的执行结果，如果发现有执行失败的情况，就需要将回滚状态置为true，并调用mainMonitor.countDown()释放所有子线程，子线程被释放后，根据回滚标志，如果是true那么就回滚，如果是false那么就提交事务。
+
+**代码实现**：
+
+RollBack.java - 回滚标志
+
+```java
+@Data
+public class RollBack {
+  private boolean needRollback;
+  
+  public RollBack(boolean needRollback) {
+    this.needRollback = needRollback;
+  }
+}
+```
+
+ThreadPoolTool.java - 任务分发工具类
+
+【注】子线程任务执行类实例是通过反射调用的，如果在子线程任务执行类中有用spring的依赖注入的话，将无法注入，需要把要注入的bean放在params中才行
+
+```java
+@Slf4j
+public class ThreadPoolTool {
+   /**
+     * 执行多线程任务
+     *
+     * @param transactionManager 事务管理器
+     * @param data               需要执行的数据集合
+     * @param threadCount        核心线程数
+     * @param params             备用参数
+     * @param clazz              子线程实现类
+     */
+    public static void executeTask(DataSourceTransactionManager transactionManager, List data, int threadCount, Map params, Class clazz) {
+        if (data == null || data.size() == 0) {
+            return;
+        }
+        int batch = 0;
+        // 创建指定线程数量的线程池
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        //监控子线程的任务执行
+        CountDownLatch childMonitor = new CountDownLatch(threadCount);
+        //监控主线程，是否需要回滚
+        CountDownLatch mainMonitor = new CountDownLatch(1);
+        //存储任务的返回结果，返回true表示不需要回滚，反之，则回滚
+        BlockingDeque<Boolean> results = new LinkedBlockingDeque<>(threadCount);
+        RollBack rollback = new RollBack(false); // 回滚状态
+        try {
+            LinkedBlockingQueue<List<?>> linkedBlockingQueue = splitQueue(data, threadCount);
+            while (true) {
+                // 主线程将任务分发给子线程
+                List taskList = linkedBlockingQueue.poll();
+                batch++;
+                params.put("batch", batch);
+                if (taskList == null) break;
+                Constructor constructor = clazz.getConstructor(CountDownLatch.class,
+                        CountDownLatch.class,
+                        BlockingDeque.class,
+                        RollBack.class,
+                        Object.class,
+                        Map.class,
+                        DataSourceTransactionManager.class);
+                ThreadTask taskThread =
+                        (ThreadTask) constructor.newInstance(childMonitor, mainMonitor, results, rollback, taskList, params, transactionManager);
+                executor.execute(taskThread);
+            }
+            // 使用childMonitor.await();阻塞主线程，等待所有子线程处理向数据库中插入的业务。
+            childMonitor.await();
+            log.info("主线程开始执行任务");
+            // 根据返回结果来确定是否回滚
+            for (int i = 0; i < threadCount; i++) {
+                boolean result = results.poll();
+                if (!result) {
+                    rollback.setNeedRollBack(true); // 需要回滚
+                    break;
+                }
+            }
+            // 主线程检查子线程执行任务的结果，若有失败结果出现，主线程标记状态告知子线程回滚，然后使用mainMonitor.countDown();
+            // 将程序控制权再次交给子线程，子线程检测回滚标志，判断是否回滚。
+            mainMonitor.countDown();
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            executor.shutdown();
+        }
+      
+   /**
+     * 分割队列, 队列中存放的是每一批次要处理的数据
+     *
+     * @param data        需要执行的数据集合
+     * @param threadCount 核心线程数
+     * @return
+     */
+    private static LinkedBlockingQueue<List<?>> splitQueue(List data, int threadCount) {
+        LinkedBlockingQueue<List<?>> queue = new LinkedBlockingQueue<>();
+        int dataTotalLen = data.size();
+        int batchSize = dataTotalLen / threadCount; // 一批次处理多少数据
+        int start, end;
+        for (int i = 0; i < threadCount; i++) {
+            start = i * batchSize; // data分割开始下标
+            end = (i + 1) * batchSize; // data分割结束下标
+            if (i < threadCount - 1) {
+                queue.offer(data.subList(start, end));
+            } else {
+                queue.offer(data.subList(start, dataTotalLen));
+            }
+        }
+        return queue;
+    }
+}
+```
+
+ThreadTask.java 子线程任务执行**抽象类**（提供了模板方法）
+
+```java
+/**
+ * 子线程任务执行类
+ *
+ * @author :[ xuejz ]
+ * @createTime :[ 2021/5/19 19:55 ]
+ * @since :[ 1.0.0 ]
+ */
+@Slf4j
+public abstract class ThreadTask implements Runnable {
+
+    /**
+     * 监控子线程任务的执行
+     */
+    private CountDownLatch childMonitor;
+
+    /**
+     * 监控主线程
+     */
+    private CountDownLatch mainMonitor;
+
+    /**
+     * 子线程执行结果
+     */
+    private BlockingDeque<Boolean> resultList;
+
+    /**
+     * 回滚标记类
+     */
+    private RollBack rollBack;
+
+  	/**
+  	 * 备用参数
+  	 */
+    private Map params;
+    /**
+     * 要处理的数据
+     */
+    private Object obj;
+    
+    /**
+     * 事务管理器
+     */
+    protected DataSourceTransactionManager transactionManager;
+    /**
+     * 事务状态
+     */
+    protected TransactionStatus txStatus;
+
+    public ThreadTask(CountDownLatch childMonitor,
+                      CountDownLatch mainMonitor,
+                      BlockingDeque<Boolean> resultList,
+                      RollBack rollBack,
+                      Map params,
+                      Object obj,
+                      DataSourceTransactionManager transactionManager) {
+        this.childMonitor = childMonitor;
+        this.mainMonitor = mainMonitor;
+        this.resultList = resultList;
+        this.rollBack = rollBack;
+        this.params = params;
+        this.obj = obj;
+        this.transactionManager = transactionManager;
+        initParam();
+    }
+
+    public abstract void initParam();
+
+    /**
+     * 执行任务, 返回false表示任务执行失败, 需要回滚
+     */
+    public abstract boolean processTask();
+    /**
+     * 事务回滚
+     */
+    private void rollback() {
+        log.info("子线程[{}]开始回滚", Thread.currentThread().getName());
+        transactionManager.rollback(txStatus);
+    }
+
+    /**
+     * 事务提交
+     */
+    private void commit() {
+        log.info("子线程[{}]提交事务", Thread.currentThread().getName());
+        transactionManager.commit(txStatus);
+    }
+
+    protected Object getParam(String key) {
+        return params.get(key);
+    }
+
+    @Override
+    public void run() {
+        log.info("子线程[{}]开始执行任务", Thread.currentThread().getName());
+        DefaultTransactionDefinition def = new DefaultTransactionDefinition();
+        def.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
+        txStatus = transactionManager.getTransaction(def);
+        Boolean result = processTask();
+        //向队列中添加处理结果
+        resultList.offer(result);
+        // 使用childMonitor.countDown()释放子线程锁定
+        // 同时使用mainMonitor.await();阻塞子线程，将程序的控制权交还给主线程。
+        childMonitor.countDown();
+        try {
+            //等待主线程的判断逻辑执行完，执行下面的是否回滚逻辑
+            mainMonitor.await();
+        } catch (InterruptedException e) {
+            log.error(e.getMessage());
+        }
+        // 主线程检查子线程执行任务的结果，若有失败结果出现，主线程标记状态将告知子线程回滚，然后使用mainMonitor.countDown();
+        // 将程序控制权再次交给子线程，子线程检测回滚标志，判断是否回滚。
+        log.info("主线程的判断逻辑执行完成, 子线程[{}]继续执行剩下的任务", Thread.currentThread().getName());
+        if(rollBack.isNeedRollBack()) {
+            rollback();
+        } else {
+            commit();
+        }
+    }
+}
+```
+
+子线程任务类
+
+```java
+@Slf4j
+public class AddAccountInfoBatch extends ThreadTask {
+
+    /**
+     * 要处理的数据
+     */
+    private List<AccountInfo> data;
+
+    /**
+     * 无法通过spring的依赖注入来注入, 需要通过params来获得
+     */
+    private AccountInfoDao accountInfoDao;
+
+    public AddAccountInfoBatch(CountDownLatch childMonitor,
+                               CountDownLatch mainMonitor,
+                               BlockingDeque resultList,
+                               RollBack rollBack,
+                               Object obj,
+                               Map params,
+                               DataSourceTransactionManager transactionManager) {
+        super(childMonitor, mainMonitor, resultList, rollBack, params, obj, transactionManager);
+        data = (List<AccountInfo>) obj;
+    }
+
+    @Override
+    public void initParam() {
+        accountInfoDao = (AccountInfoDao) getParam("accountInfoDao");
+    }
+
+    @Override
+    public boolean processTask() {
+        log.info("子线程[{}]执行业务逻辑", Thread.currentThread().getName());
+        try {
+            if (data.get(0).getAccountBalance() == 10) {
+                throw new RuntimeException("人工制造异常 - 回滚");
+            }
+            int i = accountInfoDao.addAccountBatch(data);
+            return i == data.size();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+}
+```
+
+Service层方法
+
+```java
+@Override
+public void insertAccountInfoBatch(List<AccountInfo> accountInfos) {
+  try {
+    int threadCount = 3; // 线程数量
+    Map params = new HashMap();
+    params.put("accountInfoDao", accountInfoDao); // 把dao层放到params中, 不然在ThreadTask中注不进去, 因为任务分配类是通过反射创建的子线程任务执行类的实例
+    ThreadPoolTool.executeTask(transactionManager, accountInfos, threadCount, params, AddAccountInfoBatch.class);
+  } catch (Exception e) {
+    throw new RuntimeException(e.getMessage());
+  }
+}
+```
+
